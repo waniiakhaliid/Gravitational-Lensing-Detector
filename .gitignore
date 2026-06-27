@@ -1,0 +1,62 @@
+# Python cache
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter / Colab
+
+.ipynb_checkpoints/
+
+# Virtual environments
+
+venv/
+env/
+.venv/
+
+# Large data folders
+
+data/
+dataset/
+datasets/
+generated_data/
+outputs/
+
+# Model files
+
+models/*.h5
+models/*.keras
+models/*.pt
+models/*.pth
+models/*.pkl
+
+# Large file types
+
+*.zip
+*.tar
+*.gz
+*.rar
+
+# NumPy / dataset arrays
+
+*.npy
+*.npz
+
+# Astronomy files
+
+*.fits
+*.fit
+
+# Logs
+
+*.log
+
+# System files
+
+.DS_Store
+Thumbs.db
+
+# VS Code
+
+.vscode/
