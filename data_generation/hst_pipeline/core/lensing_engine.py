@@ -7,15 +7,12 @@ and ray-traced images for SIE + external shear + NFW subhalo systems.
 import numpy as np
 from typing import Dict, Optional, Tuple
 
-# lenstronomy imports (all lazy-checked at call time for clean error messages)
+# lenstronomy imports — compatible with lenstronomy >= 1.11
 from lenstronomy.LensModel.lens_model import LensModel
 from lenstronomy.LightModel.light_model import LightModel
 from lenstronomy.ImSim.image_model import ImageModel
-from lenstronomy.PointSource.point_source import PointSource
-from lenstronomy.ImSim.image_linear_fit import ImageLinearFit
 from lenstronomy.Data.imaging_data import ImageData
 from lenstronomy.Data.psf import PSF
-import lenstronomy.Util.param_util as param_util
 import lenstronomy.Util.util as util
 
 from config import (
@@ -58,23 +55,22 @@ def make_psf_object(fwhm_arcsec: float, pixel_scale: float = PIXEL_SCALE) -> PSF
 
 def make_image_data(img_size: int = IMG_SIZE,
                     pixel_scale: float = PIXEL_SCALE) -> ImageData:
-    """Build a lenstronomy ImageData object for a square cutout."""
+    """Build a lenstronomy ImageData object for a square cutout.
+    Compatible with lenstronomy >= 1.11 (num_pix/delta_pix API).
+    """
     _, _, ra_at_xy_0, dec_at_xy_0, _, _, Mpix2coord, _ = (
         util.make_grid_with_coordtransform(
-            numPix=img_size,
-            deltapix=pixel_scale,
-            center_ra=0.0,
-            center_dec=0.0,
-            inverse=False,
+            num_pix=img_size,
+            delta_pix=pixel_scale,
+            inverse=True,
         )
     )
+    # nx/ny removed in lenstronomy >= 1.12 — size is inferred from image_data
     kwargs_data = {
-        "nx"             : img_size,
-        "ny"             : img_size,
-        "ra_at_xy_0"     : ra_at_xy_0,
-        "dec_at_xy_0"    : dec_at_xy_0,
+        "ra_at_xy_0"         : ra_at_xy_0,
+        "dec_at_xy_0"        : dec_at_xy_0,
         "transform_pix2angle": Mpix2coord,
-        "image_data"     : np.zeros((img_size, img_size)),
+        "image_data"         : np.zeros((img_size, img_size)),
     }
     return ImageData(**kwargs_data)
 

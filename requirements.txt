@@ -1,14 +1,29 @@
-numpy
-pandas
-matplotlib
-scikit-learn
-tqdm
+# HST Lensing Dataset Pipeline — Requirements
+# Tested on Google Colab (Python 3.10+)
+# Install with: pip install -r requirements.txt
 
-torch
-torchvision
+# Core simulation
+lenstronomy==1.14.1
 
-astropy
-lenstronomy
+# Image handling
+Pillow==12.1.1
 
-jupyter
-notebook
+# Numerics
+numpy==2.4.4
+scipy==1.17.1
+
+# Data
+pandas==3.0.2
+
+# Progress bar
+tqdm==4.68.3
+
+# Visualization
+matplotlib==3.10.8
+
+# ML (already pre-installed on Colab — listed for local environments)
+# torch and torchvision versions depend on your CUDA version.
+# On Colab T4 (CUDA 12.x), the pre-installed versions work fine.
+# For local install, visit https://pytorch.org/get-started/locally/
+# torch>=2.0.0
+# torchvision>=0.15.0

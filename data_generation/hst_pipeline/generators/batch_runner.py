@@ -137,7 +137,7 @@ def assign_splits(df: pd.DataFrame, global_seed: int = GLOBAL_SEED) -> pd.DataFr
 
     groups = df.groupby(["main_class", "realism"])
     for (cls, rl), grp in groups:
-        indices   = grp.index.to_numpy()
+        indices   = grp.index.to_numpy().copy()   # writable copy
         rng.shuffle(indices)
         n         = len(indices)
         n_train   = int(n * SPLIT_FRACS["train"])
@@ -244,7 +244,6 @@ def print_dataset_stats(df: pd.DataFrame) -> None:
     ct = pd.crosstab(df["main_class"], df["realism"])
     print(ct.to_string())
 
-    errors = df[df.get("_error", pd.Series(dtype=str)).notna()]
     if "_error" in df.columns:
         err_count = df["_error"].notna().sum()
         if err_count > 0:
