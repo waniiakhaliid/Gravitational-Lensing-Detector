@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     ROOT_DIR, IMAGES_DIR, METADATA_PATH, SPLITS_DIR, MODEL2_DIR,
     CLASS_COUNTS, MORPH_SPLIT, REALISM_SPLIT, SPLIT_FRACS,
-    NUM_WORKERS, BATCH_SIZE, GLOBAL_SEED,
+    NUM_WORKERS, BATCH_SIZE, GLOBAL_SEED, AMBIGUOUS_DIR,
 )
 from generators.image_generator import generate_single_image
 
@@ -221,11 +221,14 @@ def write_split_files(df: pd.DataFrame) -> None:
 # DATASET STATS REPORTER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_dataset_stats(df: pd.DataFrame) -> None:
+def print_dataset_stats(df: pd.DataFrame,
+                        ambiguous_df: pd.DataFrame | None = None) -> None:
     print("\n" + "="*60)
     print(" DATASET SUMMARY")
     print("="*60)
-    print(f"\nTotal images: {len(df):,}")
+    print(f"\nTotal images (main dataset): {len(df):,}")
+    if ambiguous_df is not None and len(ambiguous_df) > 0:
+        print(f"Ambiguous images excluded : {len(ambiguous_df):,}")
 
     print("\n── By main_class ──")
     print(df["main_class"].value_counts().to_string())
@@ -233,9 +236,10 @@ def print_dataset_stats(df: pd.DataFrame) -> None:
     print("\n── By realism ──")
     print(df["realism"].value_counts().to_string())
 
-    print("\n── By lens_type (lensed images only) ──")
-    lens_df = df[df["lens_label"] == "lens"]
-    print(lens_df["lens_type"].value_counts().to_string())
+    print("\n── By final_morph (lensed images only) ──")
+    lens_df = df[df["lens_label"] == "lens"].copy()
+    morph_col = "final_morph" if "final_morph" in df.columns else "lens_type"
+    print(lens_df[morph_col].value_counts().to_string())
 
     print("\n── By split ──")
     print(df["split"].value_counts().to_string())
@@ -243,6 +247,27 @@ def print_dataset_stats(df: pd.DataFrame) -> None:
     print("\n── Realism × Class (cross-tab) ──")
     ct = pd.crosstab(df["main_class"], df["realism"])
     print(ct.to_string())
+
+    # ── Morphology transition matrix ──────────────────────────────────────
+    if "intended_morph" in df.columns and "final_morph" in df.columns:
+        lensed = df[
+            (df["lens_label"] == "lens") &
+            (df["intended_morph"] != "none")
+        ].copy()
+        if len(lensed) > 0:
+            print("\n── Morphology Transition Matrix (intended → final) ──")
+            matrix = pd.crosstab(
+                lensed["intended_morph"],
+                lensed["final_morph"],
+                margins=True,
+                margins_name="TOTAL",
+            )
+            print(matrix.to_string())
+
+            n_mismatch = (lensed["intended_morph"] != lensed["final_morph"]).sum()
+            mismatch_rate = n_mismatch / max(len(lensed), 1)
+            print(f"\n   Mismatch count : {n_mismatch:,} / {len(lensed):,}")
+            print(f"   Mismatch rate  : {mismatch_rate:.1%}")
 
     if "_error" in df.columns:
         err_count = df["_error"].notna().sum()
@@ -289,6 +314,10 @@ def run_pipeline(num_workers: int = NUM_WORKERS,
     else:
         existing_rows = []
 
+    # ambiguous_df is populated in the generation branch; pre-initialise here
+    # so the resume (no-jobs) path also has a defined reference for stats.
+    ambiguous_df: pd.DataFrame | None = None
+
     if not jobs:
         print("      Nothing to do! All images already generated.")
         df = pd.read_csv(METADATA_PATH)
@@ -317,11 +346,35 @@ def run_pipeline(num_workers: int = NUM_WORKERS,
 
         # Build DataFrame
         print("\n[3/5] Building metadata DataFrame...")
-        df = pd.DataFrame(meta_rows)
-        df.sort_values("idx", inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        all_df = pd.DataFrame(meta_rows)
+        all_df.sort_values("idx", inplace=True)
+        all_df.reset_index(drop=True, inplace=True)
 
-    # Assign splits
+        # ── Separate ambiguous images from the main dataset ────────────────
+        # Ambiguous images are NOT counted in the main dataset totals.
+        if "_is_ambiguous" in all_df.columns:
+            ambiguous_mask = all_df["_is_ambiguous"].fillna(False).astype(bool)
+            ambiguous_df   = all_df[ambiguous_mask].copy()
+            df             = all_df[~ambiguous_mask].copy()
+        else:
+            ambiguous_df = pd.DataFrame()
+            df           = all_df
+
+        # Drop internal routing flag before writing CSVs
+        for _d in [df, ambiguous_df]:
+            if "_is_ambiguous" in _d.columns:
+                _d.drop(columns=["_is_ambiguous"], inplace=True)
+
+        # Write ambiguous metadata to its own CSV
+        if len(ambiguous_df) > 0:
+            os.makedirs(AMBIGUOUS_DIR, exist_ok=True)
+            amb_meta_path = os.path.join(AMBIGUOUS_DIR, "ambiguous_metadata.csv")
+            ambiguous_df.to_csv(amb_meta_path, index=False)
+            print(f"      Ambiguous images: {len(ambiguous_df):,}  → {amb_meta_path}")
+        else:
+            ambiguous_df = None   # for stats printer
+
+    # Assign splits (main dataset only)
     print("\n[4/5] Assigning train/val/test splits...")
     df = assign_splits(df, GLOBAL_SEED)
     df.to_csv(METADATA_PATH, index=False)
@@ -336,8 +389,8 @@ def run_pipeline(num_workers: int = NUM_WORKERS,
     build_model2_folders(df)
     print(f"      Saved: {MODEL2_DIR}/")
 
-    # Print stats
-    print_dataset_stats(df)
+    # Print stats (pass ambiguous_df for excluded-count reporting)
+    print_dataset_stats(df, ambiguous_df=ambiguous_df)
 
     # Save dataset config summary as JSON
     config_summary = {

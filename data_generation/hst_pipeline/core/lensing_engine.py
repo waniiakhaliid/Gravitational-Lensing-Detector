@@ -223,6 +223,12 @@ def sample_subhalo_kwargs(rng: np.random.Generator,
     # NFW: lenstronomy uses alpha_Rs and Rs
     # Convert from mass + concentration using approximate analytic relation
     # Rs [arcsec] ≈ (M_200 / (4π * rho_s * Rs^3))^(1/3) — simplified
+
+    # Rs controls how spread out the halo is
+    # small subhalo mass → Rs close to 0.05 arcsec
+    # large subhalo mass → Rs close to 0.20 arcsec
+    # It is not the visible size of the subhalo. It is the scale of its gravitational effect.
+
     # We use a phenomenological mapping that keeps subhalo SUBTLE
     # Rs [arcsec] roughly 0.05–0.2 for M ~ 1e8–5e9 M_sun
     log_mass_norm = (np.log10(mass) - 8.0) / (np.log10(5e9) - 8.0)
@@ -248,20 +254,35 @@ def sample_subhalo_kwargs(rng: np.random.Generator,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN IMAGE RENDERER
+# PHYSICS PARAMETER SAMPLER  (decoupled from rendering)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_lensed_image(rng: np.random.Generator,
-                        morph: str,
-                        with_subhalo: bool,
-                        fwhm_arcsec: float,
-                        img_size: int = IMG_SIZE,
-                        pixel_scale: float = PIXEL_SCALE) -> Tuple[np.ndarray, Dict]:
+def sample_physics_params(
+    rng         : np.random.Generator,
+    morph       : str,
+    with_subhalo: bool,
+) -> Dict:
     """
-    Full lenstronomy ray-trace for a lensed system.
-    Returns (image_array [float32, counts], metadata_dict).
+    Sample all lens + source (+ optional subhalo) parameters.
+    Returns a single dict that can be passed directly to
+    render_source_only_image() and render_lensed_image_from_params().
+
+    This decoupling lets the pipeline:
+      1. Sample params once.
+      2. Render source-only for morphology analysis.
+      3. Render the full image from the *same* params (no re-sampling).
+
+    Keys in the returned dict
+    -------------------------
+    lens_model_list   : list[str]   — e.g. ["SIE", "SHEAR"] or [..., "NFW"]
+    kwargs_lens       : list[dict]  — lenstronomy lens kwargs
+    kwargs_lens_light : list[dict]  — lenstronomy lens-light kwargs
+    kwargs_source     : list[dict]  — lenstronomy source kwargs
+    theta_E           : float       — SIE Einstein radius [arcsec]
+    meta_lens         : dict        — flat CSV-ready lens metadata
+    meta_src          : dict        — flat CSV-ready source metadata
+    meta_sub          : dict        — flat CSV-ready subhalo metadata (empty if no subhalo)
     """
-    # --- Lens model setup ---
     lens_model_list = ["SIE", "SHEAR"]
     if with_subhalo:
         lens_model_list.append("NFW")
@@ -271,53 +292,173 @@ def render_lensed_image(rng: np.random.Generator,
 
     kwargs_source, meta_src = sample_source_kwargs(rng, morph, theta_E)
 
-    meta_sub = {}
+    meta_sub: Dict = {}
     if with_subhalo:
         kwargs_sub, meta_sub = sample_subhalo_kwargs(rng, theta_E)
         kwargs_lens.append(kwargs_sub)
 
-    # PSF
-    psf_obj   = make_psf_object(fwhm_arcsec, pixel_scale)
-    data_obj  = make_image_data(img_size, pixel_scale)
+    return {
+        "lens_model_list"  : lens_model_list,
+        "kwargs_lens"      : kwargs_lens,
+        "kwargs_lens_light": kwargs_lens_light,
+        "kwargs_source"    : kwargs_source,
+        "theta_E"          : theta_E,
+        "meta_lens"        : meta_lens,
+        "meta_src"         : meta_src,
+        "meta_sub"         : meta_sub,
+    }
 
-    lens_model_obj  = LensModel(lens_model_list=lens_model_list)
-    source_model    = LightModel(light_model_list=["SERSIC_ELLIPSE"])
-    lens_light_model= LightModel(light_model_list=["SERSIC_ELLIPSE"])
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE-ONLY RENDERER  (no PSF · no lens light — for morphology analysis)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_source_only_image(
+    params     : Dict,
+    img_size   : int   = IMG_SIZE,
+    pixel_scale: float = PIXEL_SCALE,
+) -> np.ndarray:
+    """
+    Render the lensed arc with **no PSF** and **no lens light**.
+
+    This is the image passed to analyze_morphology() and must never have
+    PSF, noise, or lens-galaxy light applied — doing so would corrupt the
+    morphology measurement.
+
+    Parameters
+    ----------
+    params : dict
+        Output of sample_physics_params().
+
+    Returns
+    -------
+    np.ndarray (float32, H × W)
+        Raw lenstronomy source counts — physically meaningful but
+        instrument-free.
+    """
+    # PSF type "NONE" → lenstronomy skips convolution entirely
+    psf_obj  = PSF(psf_type="NONE")
+    data_obj = make_image_data(img_size, pixel_scale)
+
+    lens_model_obj = LensModel(lens_model_list=params["lens_model_list"])
+    source_model   = LightModel(light_model_list=["SERSIC_ELLIPSE"])
 
     kwargs_numerics = {
-        "supersampling_factor"          : SUPERSAMPLE,
-        "supersampling_convolution"     : False,
+        "supersampling_factor"     : SUPERSAMPLE,
+        "supersampling_convolution": False,
     }
 
     image_model = ImageModel(
-        data_class          = data_obj,
-        psf_class           = psf_obj,
-        lens_model_class    = lens_model_obj,
-        source_model_class  = source_model,
-        lens_light_model_class= lens_light_model,
-        kwargs_numerics     = kwargs_numerics,
+        data_class             = data_obj,
+        psf_class              = psf_obj,
+        lens_model_class       = lens_model_obj,
+        source_model_class     = source_model,
+        lens_light_model_class = None,       # no lens galaxy light
+        kwargs_numerics        = kwargs_numerics,
     )
 
     image = image_model.image(
-        kwargs_lens         = kwargs_lens,
-        kwargs_source       = kwargs_source,
-        kwargs_lens_light   = kwargs_lens_light,
-        kwargs_ps           = None,
+        kwargs_lens       = params["kwargs_lens"],
+        kwargs_source     = params["kwargs_source"],
+        kwargs_lens_light = [],
+        kwargs_ps         = None,
+    )
+    return image.astype(np.float32)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FULL RENDERER  (PSF + lens light — from pre-sampled params)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_lensed_image_from_params(
+    params     : Dict,
+    fwhm_arcsec: float,
+    img_size   : int   = IMG_SIZE,
+    pixel_scale: float = PIXEL_SCALE,
+) -> Tuple[np.ndarray, Dict]:
+    """
+    Render the complete lensed image (source arc + lens galaxy light, with PSF)
+    from pre-sampled physics parameters.
+
+    Use this after analyze_morphology() has approved the arc morphology so that
+    the same physical realisation is used for both the analysis and final image.
+
+    Parameters
+    ----------
+    params : dict
+        Output of sample_physics_params().
+    fwhm_arcsec : float
+        PSF FWHM in arcseconds (sampled in image_generator before the retry loop).
+
+    Returns
+    -------
+    (image float32 H×W, metadata dict)
+    """
+    psf_obj  = make_psf_object(fwhm_arcsec, pixel_scale)
+    data_obj = make_image_data(img_size, pixel_scale)
+
+    lens_model_obj   = LensModel(lens_model_list=params["lens_model_list"])
+    source_model     = LightModel(light_model_list=["SERSIC_ELLIPSE"])
+    lens_light_model = LightModel(light_model_list=["SERSIC_ELLIPSE"])
+
+    kwargs_numerics = {
+        "supersampling_factor"     : SUPERSAMPLE,
+        "supersampling_convolution": False,
+    }
+
+    image_model = ImageModel(
+        data_class              = data_obj,
+        psf_class               = psf_obj,
+        lens_model_class        = lens_model_obj,
+        source_model_class      = source_model,
+        lens_light_model_class  = lens_light_model,
+        kwargs_numerics         = kwargs_numerics,
+    )
+
+    image = image_model.image(
+        kwargs_lens       = params["kwargs_lens"],
+        kwargs_source     = params["kwargs_source"],
+        kwargs_lens_light = params["kwargs_lens_light"],
+        kwargs_ps         = None,
     )
 
     meta = {
         "fwhm_arcsec": round(fwhm_arcsec, 4),
-        **meta_lens,
-        **meta_src,
-        **meta_sub,
+        **params["meta_lens"],
+        **params["meta_src"],
+        **params["meta_sub"],
     }
     return image.astype(np.float32), meta
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BACKWARD-COMPATIBLE WRAPPER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_lensed_image(rng: np.random.Generator,
+                        morph: str,
+                        with_subhalo: bool,
+                        fwhm_arcsec: float,
+                        img_size: int = IMG_SIZE,
+                        pixel_scale: float = PIXEL_SCALE) -> Tuple[np.ndarray, Dict]:
+    """
+    Original one-shot API: sample parameters, then render the full lensed image.
+    Preserved for backward compatibility with any code that calls it directly.
+
+    For the morphology-aware pipeline use:
+        params = sample_physics_params(rng, morph, with_subhalo)
+        src    = render_source_only_image(params)
+        ...analyze_morphology(src, ...)...
+        img, meta = render_lensed_image_from_params(params, fwhm_arcsec)
+    """
+    params = sample_physics_params(rng, morph, with_subhalo)
+    return render_lensed_image_from_params(params, fwhm_arcsec, img_size, pixel_scale)
 
 def render_no_lens_image(rng: np.random.Generator,
                          fwhm_arcsec: float,
                          img_size: int = IMG_SIZE,
                          pixel_scale: float = PIXEL_SCALE) -> Tuple[np.ndarray, Dict]:
+
     """
     Render a field of non-lensed galaxies.
     Returns (image_array [float32, counts], metadata_dict).

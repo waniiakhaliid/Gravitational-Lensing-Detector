@@ -228,3 +228,22 @@ NOISE_PARAMS = {
     "semi_messy" : SemiMessyNoiseParams(),
     "messy"      : MessyNoiseParams(),
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MORPHOLOGY ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimum connected-component area (pixels) kept after thresholding.
+MIN_COMPONENT_AREA = 20
+
+# Images with fewer arc pixels than this → classified as "no_lens" by analyzer.
+ARC_PIXEL_FLOOR    = 50
+
+# Maximum regeneration attempts per ambiguous / poor-quality lensed image.
+MAX_RETRIES        = 5
+
+# Destination folder for images that remain ambiguous after MAX_RETRIES.
+# These are excluded from the main dataset count and metadata.csv.
+AMBIGUOUS_DIR      = os.path.join(ROOT_DIR, "ambiguous")
+
+# Version tag written to every metadata row (bump when classifier logic changes).
+ANALYSIS_VERSION   = "v1.0"
